@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import math
+import os
 import subprocess
 import tempfile
 from pathlib import Path
@@ -32,17 +33,26 @@ def decode_audio(data: bytes, sample_rate: int = SAMPLE_RATE) -> np.ndarray:
 
 
 def _decode_with_ffmpeg(data: bytes, sample_rate: int) -> np.ndarray:
-    with tempfile.NamedTemporaryFile(suffix=".audio") as source:
+    # Windows: a still-open NamedTemporaryFile cannot be opened by another
+    # process, so close it before handing the path to ffmpeg.
+    with tempfile.NamedTemporaryFile(suffix=".audio", delete=False) as source:
         source.write(data)
         source.flush()
+        path = source.name
+    try:
         command = [
-            "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-i", source.name,
+            "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-i", path,
             "-f", "s16le", "-acodec", "pcm_s16le", "-ac", "1", "-ar", str(sample_rate), "pipe:1",
         ]
         try:
             result = subprocess.run(command, capture_output=True, timeout=60, check=False)
         except FileNotFoundError as error:
             raise ValueError("unsupported audio format (install ffmpeg to decode it)") from error
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
     if result.returncode != 0:
         raise ValueError(result.stderr.decode("utf-8", "replace").strip() or "could not decode audio")
     return np.frombuffer(result.stdout, dtype="<i2").astype(np.float32) / 32768.0
